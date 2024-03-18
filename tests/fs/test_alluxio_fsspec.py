@@ -52,7 +52,13 @@ def main(args):
     alluxio = fsspec.filesystem(
         "alluxio", etcd_hosts=args.etcd_hosts, target_protocol="s3"
     )
+    content = alluxio.cat_file("s3://lucybucket2022/10G-xgboost-data.parquet/8034b2644a1d426d9be3bbfa78673dfa_000085.parquet",start=0,end=41166378)
+    from hashlib import md5
+    m = md5()
+    m.update(content)
+    print(f"md5:{m.hexdigest()}")
 
+    '''
     metrics = {
         "total_files": 0,
         "read_time": 0,
@@ -79,6 +85,7 @@ def main(args):
         print(
             f"Throughput: {humanfriendly.format_size(throughput, binary=True)} per second"
         )
+    '''
 
 
 if __name__ == "__main__":
