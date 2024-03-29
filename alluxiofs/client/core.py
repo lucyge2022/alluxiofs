@@ -528,11 +528,14 @@ class AlluxioClient:
         path_id = self._get_path_hash(file_path)
 
         try:
-            return b"".join(
-                self._range_page_generator(
-                    worker_host, worker_http_port, path_id, offset, length
-                )
+            return self._multithread_range_page_generator(
+                worker_host, worker_http_port, path_id, offset, length
             )
+            # return b"".join(
+            #     self._range_page_generator(
+            #         worker_host, worker_http_port, path_id, offset, length
+            #     )
+            # )
         except Exception as e:
             raise Exception(
                 f"Error when reading file {file_path}: error {e}: "
@@ -595,6 +598,38 @@ class AlluxioClient:
             if len(page_content) < self.page_size:  # last page
                 break
             page_index += 1
+
+    def _multithread_range_page_generator(
+        self, worker_host, worker_http_port, path_id, offset, length
+    ):
+        import alluxiocommon
+        read_urls = []
+        start = offset
+        while start < offset + length:
+            page_index = start // self.page_size
+            inpage_off = start % self.page_size
+            inpage_read_len = min(self.page_size - inpage_off, length - start)
+            page_url = None
+            if inpage_off == 0 and inpage_read_len == self.page_size:
+                page_url = FULL_PAGE_URL_FORMAT.format(
+                    worker_host=worker_host,
+                    http_port=worker_http_port,
+                    path_id=path_id,
+                    page_index=page_index,
+                )
+            else:
+                page_url = PAGE_URL_FORMAT.format(
+                    worker_host=worker_host,
+                    http_port=worker_http_port,
+                    path_id=path_id,
+                    page_index=page_index,
+                    page_offset=inpage_off,
+                    page_length=inpage_read_len,
+                )
+            read_urls.append(page_url)
+            start += inpage_read_len
+        data = alluxiocommon.multi_http_requests(read_urls)
+        return data
 
     def _range_page_generator(
         self, worker_host, worker_http_port, path_id, offset, length
