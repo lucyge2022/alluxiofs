@@ -199,14 +199,10 @@ class AlluxioClient:
                     f"Hash node per worker is set to {hash_node_per_worker}"
                 )
             if ALLUXIO_COMMON_EXTENSION_ENABLE in options:
-                extension_enabled = bool(
-                    options[ALLUXIO_COMMON_EXTENSION_ENABLE]
-                )
                 self.logger.debug(
-                    f"ALLUXIO_COMMON_EXTENSION_ENABLE ? {extension_enabled}"
+                    "alluxiocommon extension enabled."
                 )
-                if extension_enabled:
-                    self.data_manager = _DataManager(concurrency)
+                self.data_manager = _DataManager(concurrency)
         if (
             not isinstance(hash_node_per_worker, int)
             or hash_node_per_worker <= 0
@@ -641,7 +637,7 @@ class AlluxioClient:
                 )
             read_urls.append(page_url)
             start += inpage_read_len
-        data = self.data_manager.multi_http_requests(read_urls)
+        data = self.data_manager.make_multi_http_req(read_urls)
         return data
 
     def _range_page_generator(

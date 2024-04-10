@@ -50,8 +50,9 @@ class AlluxioFSSpecBench(AbstractBench):
 
     def init(self):
         print(f"{self.args.etcd_hosts}, {self.args.worker_hosts}")
-        alluxio_options = {}
-        alluxio_options['options'] = {"alluxio.common.extension.enable": "True"}
+        alluxio_options = {
+            "alluxio.common.extension.enable": "True",
+            "alluxio.worker.page.store.page.size" : "1MB"}
         self.alluxio_fs = AlluxioFileSystem(
             etcd_hosts=self.args.etcd_hosts,
             worker_hosts=self.args.worker_hosts,

@@ -64,7 +64,7 @@ impl DataManager {
             let client_clone = Arc::clone(&(self_.request_client));
             let (send, recv) = tokio::sync::oneshot::channel();
             let install_res = self_.thread_pool.install(move || -> Result<(), reqwest::Error> {
-                println!("request idx:{}", i);
+                // println!("request idx:{}", i);
                 let body = perform_http_get(url_owned.as_str(), client_clone.as_ref());
                 send.send(body).unwrap();
                 Ok(())
@@ -81,7 +81,7 @@ impl DataManager {
             let result = sender.unwrap().blocking_recv().unwrap();
             content_results.push(result);
         }
-        println!("content_results len:{}", content_results.len());
+        // println!("content_results len:{}", content_results.len());
         let mut concatenated_data: Vec<u8> = Vec::new();
         for content in &content_results {
             concatenated_data.extend(content.as_ref().unwrap());
