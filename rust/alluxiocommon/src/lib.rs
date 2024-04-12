@@ -14,6 +14,7 @@ use pyo3::{
     exceptions::PyIndexError,
     exceptions::PyValueError,
     exceptions::PyTypeError,
+    exceptions::PyException,
     prelude::{pymodule, PyModule, PyResult, Python},
     types::PyBytes,
     buffer::PyBuffer,
@@ -73,21 +74,43 @@ impl DataManager {
                 Ok(success) => {
                     //DO NOTHING
                 },
-                Err(err) => (), //[TODO] handle error !! PyValueError::new_err(err.to_string()),
+                Err(err) => {
+                    PyException::new_err(err.to_string())
+                        .restore(self_.py());
+                    return Err(PyErr::fetch(self_.py()));
+                },
             }
             senders[i] = Some(recv);
         }
         for sender in senders {
-            let result = sender.unwrap().blocking_recv().unwrap();
-            content_results.push(result);
+            let result = sender.unwrap().blocking_recv();
+            match result {
+                Ok(content_result) => {
+                    content_results.push(content_result);
+                },
+                Err(err) => {
+                    PyException::new_err(err.to_string())
+                        .restore(self_.py());
+                    return Err(PyErr::fetch(self_.py()));
+                }
+            }
+            // let result = sender.unwrap().blocking_recv().unwrap();
+            // content_results.push(result);
         }
-        // println!("content_results len:{}", content_results.len());
         let mut concatenated_data: Vec<u8> = Vec::new();
-        for content in &content_results {
-            concatenated_data.extend(content.as_ref().unwrap());
+        for content_result in &content_results {
+            match content_result {
+                Ok(content) => {
+                    concatenated_data.extend(content);
+                },
+                Err(err) => {
+                    let err_str = err.to_string();
+                    PyException::new_err(format!("Error in getting result, {}", err_str))
+                        .restore(self_.py());
+                    return Err(PyErr::fetch(self_.py()));
+                }
+            }
         }
-        // ?? what return type to python?
-        let py = self_.py();
         Ok(PyBytes::new(self_.py(), &concatenated_data).to_object(self_.py()))
     }
 }
@@ -121,6 +144,16 @@ mod tests {
 
     #[test]
     fn test_example() {
+        let client = Client::new();
+        let res = perform_http_get("http://127.0.0.1:1000", &client);
+        match res {
+            Ok(success) => {
+                println!("SUCCESS!");
+            },
+            Err(e) => {
+                println!("error!:{}", e);
+            }
+        }
         print!("test_example");
     }
 }
