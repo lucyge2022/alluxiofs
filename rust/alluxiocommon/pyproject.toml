@@ -4,3 +4,5 @@ build-backend = "maturin"
 
 [tool.maturin]
 compatibility = "linux"
+name = "alluxiocommon"
+module-name = "alluxiocommon"
