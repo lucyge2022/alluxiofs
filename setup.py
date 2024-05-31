@@ -1,11 +1,20 @@
 from setuptools import find_packages
 from setuptools import setup
+from setuptools_rust import Binding
+from setuptools_rust import RustExtension
 
 setup(
     name="alluxiofs",
     version="1.0.1.dev1",
     description="Alluxio Fsspec provides Alluxio filesystem spec implementation.",
     url="https://github.com/fsspec/alluxiofs",
+    rust_extensions=[
+        RustExtension(
+            "alluxiofs.alluxiocommon.alluxiocommon",
+            "alluxiofs/rust/alluxiocommon/Cargo.toml",
+            binding=Binding.PyO3,
+        )
+    ],
     packages=find_packages(exclude=["tests", "tests.*"]),
     include_package_data=True,
     zip_safe=False,
