@@ -8,6 +8,8 @@ setup(
     version="1.0.1.dev1",
     description="Alluxio Fsspec provides Alluxio filesystem spec implementation.",
     url="https://github.com/fsspec/alluxiofs",
+    long_description=open('README.md').read(),
+    long_description_content_type='text/markdown',
     rust_extensions=[
         RustExtension(
             "alluxiofs.alluxiocommon.alluxiocommon",
