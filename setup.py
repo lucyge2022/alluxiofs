@@ -11,7 +11,7 @@ setup(
     rust_extensions=[
         RustExtension(
             "alluxiofs.alluxiocommon.alluxiocommon",
-            "alluxiofs/rust/alluxiocommon/Cargo.toml",
+            "alluxiofs/alluxiocommon/Cargo.toml",
             binding=Binding.PyO3,
         )
     ],

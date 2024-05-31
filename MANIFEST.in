@@ -1,2 +1,2 @@
-graft alluxiofs/rust/alluxiocommon/src
-include alluxiofs/rust/alluxiocommon/Cargo.toml
+graft alluxiofs/alluxiocommon/src
+include alluxiofs/alluxiocommon/Cargo.toml
