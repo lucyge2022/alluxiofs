@@ -24,7 +24,7 @@ from alluxiofs.client import AlluxioClient
 from alluxiofs.client.config import AlluxioClientConfig
 from alluxiofs.client.log import setup_logger
 from alluxiofs.client.log import TagAdapter
-from alluxiofs.client.ufs_manager import UFSUpdater
+from alluxiofs.client.ufs_manager import UFSManager
 from alluxiofs.client.utils import get_prefetch_policy
 from alluxiofs.client.utils import parameters_adapter
 
@@ -138,11 +138,22 @@ class AlluxioFileSystem(AbstractFileSystem):
         # init alluxio client
         # init ufs updater
         test_options = kwargs.get("test_options", {})
-        skip_alluxio = test_options.get("skip_alluxio") is True
+        test_skip_alluxio = test_options.get("skip_alluxio") is True
+        self.skip_alluxio = kwargs.get("skip_alluxio")
         client = AlluxioClient(**kwargs)
-        self.ufs_updater = UFSUpdater(client)
-        self.ufs_updater.start_updater()
-        self.alluxio = None if skip_alluxio else client
+        if self.skip_alluxio is True:
+            ufs_config = kwargs.get("ufs_config", {})
+            if not ufs_config:
+                raise ValueError(
+                    "ufs_config must be provided when skip_alluxio is True."
+                )
+            self.ufs_manager = UFSManager(config=ufs_config)
+            self.ufs_manager.initialize_ufs_manager()
+            self.alluxio = None
+        else:
+            self.ufs_manager = UFSManager(alluxio=client)
+            self.ufs_manager.initialize_ufs_manager()
+            self.alluxio = None if test_skip_alluxio else client
 
         self.fallback_to_ufs_enabled = (
             self.alluxio.config.fallback_to_ufs_enabled
@@ -174,8 +185,8 @@ class AlluxioFileSystem(AbstractFileSystem):
         try:
             if self.alluxio is not None:
                 self.alluxio.close()
-            if hasattr(self, "ufs_updater") and self.ufs_updater is not None:
-                self.ufs_updater.stop_updater()
+            if hasattr(self, "ufs_manager") and self.ufs_manager is not None:
+                self.ufs_manager.shutdown_ufs_manager()
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")
         finally:
@@ -265,44 +276,44 @@ class AlluxioFileSystem(AbstractFileSystem):
                     bound.arguments[name] = self._strip_protocol(value)
 
             # Extract sanitized arguments for the Alluxio call
-            sanitized_args = bound.args
-            sanitized_kwargs = bound.kwargs
-
+            if self.skip_alluxio is True:
+                res, _ = self._ufs_execute(func.__name__, detected_path, bound)
+                return res
             # 3. Happy Path: Attempt to execute via Alluxio
-            try:
-                if self.alluxio:
-                    start_time = time.time()
-                    # Call the original method with sanitized arguments
-                    result = func(*sanitized_args, **sanitized_kwargs)
-                    duration = time.time() - start_time
-                    self.logger.debug(
-                        f"Exit(Ok): alluxio op({func.__name__}) "
-                        f"time({duration:.2f}s)"
-                    )
-                    return result
-                else:
-                    raise ModuleNotFoundError("alluxio client is None")
-            except Exception as e:
-                if (
-                    isinstance(e, FileNotFoundError)
-                    and func.__name__ == "info"
-                ):
-                    raise e
-                if not self.fallback_to_ufs_enabled:
-                    raise e
-                self._log_alluxio_error(func.__name__, e)
-
-            # 4. Fallback Path: Execute logic on UFS
-            # FIX: Pass the 'bound' object, not the sanitized tuple/dict,
-            # because _execute_fallback needs to inspect parameter names.
-            return self._execute_fallback(func.__name__, detected_path, bound)
+            else:
+                return self._alluxio_execute_with_fallback(
+                    func, detected_path, bound
+                )
 
         return wrapper
 
-    # ---------------------------------------------------------
-    # The following methods should be part of your Class
-    # (e.g., AlluxioFileSystem)
-    # ---------------------------------------------------------
+    def _alluxio_execute_with_fallback(self, func, detected_path, bound):
+        sanitized_args = bound.args
+        sanitized_kwargs = bound.kwargs
+        try:
+            if self.alluxio:
+                start_time = time.time()
+                # Call the original method with sanitized arguments
+                result = func(*sanitized_args, **sanitized_kwargs)
+                duration = time.time() - start_time
+                self.logger.debug(
+                    f"Exit(Ok): alluxio op({func.__name__}) "
+                    f"time({duration:.2f}s)"
+                )
+                return result
+            else:
+                raise ModuleNotFoundError("alluxio client is None")
+        except Exception as e:
+            if isinstance(e, FileNotFoundError) and func.__name__ == "info":
+                raise e
+            if not self.fallback_to_ufs_enabled:
+                raise e
+            self._log_alluxio_error(func.__name__, e)
+
+        # 4. Fallback Path: Execute logic on UFS
+        # FIX: Pass the 'bound' object, not the sanitized tuple/dict,
+        # because _execute_fallback needs to inspect parameter names.
+        return self._execute_fallback(func.__name__, detected_path, bound)
 
     def _execute_fallback(self, method_name, detected_path, bound_args):
         """
@@ -314,68 +325,8 @@ class AlluxioFileSystem(AbstractFileSystem):
             # If no protocol was detected from args, use the FS default target protocol.
 
             # Retrieve the UFS client
-            fs = self.ufs_updater.must_get_ufs_from_path(detected_path)
 
-            if fs is None:
-                raise RuntimeError(
-                    f"No UFS client found for path: {detected_path}"
-                )
-            # Dynamically retrieve the corresponding method from the UFS client
-            fs_method = getattr(fs, method_name, None)
-            if not fs_method:
-                raise NotImplementedError(
-                    f"Method {method_name} is not implemented in UFS {fs}"
-                )
-
-            # --- Smart Argument Adaptation ---
-
-            # 1. Inspect the target method's signature (UFS implementation)
-            target_sig = inspect.signature(fs_method)
-            target_params = target_sig.parameters
-
-            # 2. Check if the target method accepts generic **kwargs.
-            accepts_kwargs = any(
-                p.kind == inspect.Parameter.VAR_KEYWORD
-                for p in target_params.values()
-            )
-
-            # 3. Construct the final arguments dictionary (Keyword Arguments only)
-            final_kwargs = {}
-
-            # Access the signature from the bound arguments to identify VAR_KEYWORD parameters
-            source_params = bound_args.signature.parameters
-
-            for name, value in bound_args.arguments.items():
-                if name == "self":
-                    continue  # Never pass the wrapper's 'self' to the UFS instance method
-
-                # Check if the current argument corresponds to **kwargs in the source function
-                is_var_keyword = (
-                    name in source_params
-                    and source_params[name].kind
-                    == inspect.Parameter.VAR_KEYWORD
-                )
-
-                if is_var_keyword:
-                    # If it is **kwargs, unpack the dictionary and merge valid keys
-                    for k, v in value.items():
-                        if k in target_params or accepts_kwargs:
-                            final_kwargs[k] = v
-                else:
-                    # Pass the argument ONLY if:
-                    # A. The target method explicitly defines this parameter name, OR
-                    # B. The target method accepts **kwargs (wildcard)
-                    if name in target_params or accepts_kwargs:
-                        final_kwargs[name] = value
-                    else:
-                        # Argument is implicitly dropped because the UFS method doesn't support it.
-                        pass
-
-            # 4. Execute the UFS method
-            # Using **final_kwargs maps arguments by name, avoiding positional mismatches.
-            final_kwargs = parameters_adapter(fs, fs_method, final_kwargs)
-            res = fs_method(**final_kwargs)
-
+            res, fs = self._ufs_execute(method_name, detected_path, bound_args)
             self.fallback_logger.debug(
                 f"Exit(Ok): ufs({fs}) op({method_name})"
             )
@@ -390,13 +341,75 @@ class AlluxioFileSystem(AbstractFileSystem):
                 f"Fallback to UFS failed for {method_name}"
             ) from e
 
+    def _ufs_execute(self, method_name, detected_path, bound_args):
+        fs = self.ufs_manager.must_get_ufs_from_path(detected_path)
+        if fs is None:
+            raise RuntimeError(
+                f"No UFS client found for path: {detected_path}"
+            )
+        # Dynamically retrieve the corresponding method from the UFS client
+        fs_method = getattr(fs, method_name, None)
+        if not fs_method:
+            raise NotImplementedError(
+                f"Method {method_name} is not implemented in UFS {fs}"
+            )
+
+        # --- Smart Argument Adaptation ---
+
+        # 1. Inspect the target method's signature (UFS implementation)
+        target_sig = inspect.signature(fs_method)
+        target_params = target_sig.parameters
+
+        # 2. Check if the target method accepts generic **kwargs.
+        accepts_kwargs = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD
+            for p in target_params.values()
+        )
+
+        # 3. Construct the final arguments dictionary (Keyword Arguments only)
+        final_kwargs = {}
+
+        # Access the signature from the bound arguments to identify VAR_KEYWORD parameters
+        source_params = bound_args.signature.parameters
+
+        for name, value in bound_args.arguments.items():
+            if name == "self":
+                continue  # Never pass the wrapper's 'self' to the UFS instance method
+
+            # Check if the current argument corresponds to **kwargs in the source function
+            is_var_keyword = (
+                name in source_params
+                and source_params[name].kind == inspect.Parameter.VAR_KEYWORD
+            )
+
+            if is_var_keyword:
+                # If it is **kwargs, unpack the dictionary and merge valid keys
+                for k, v in value.items():
+                    if k in target_params or accepts_kwargs:
+                        final_kwargs[k] = v
+            else:
+                # Pass the argument ONLY if:
+                # A. The target method explicitly defines this parameter name, OR
+                # B. The target method accepts **kwargs (wildcard)
+                if name in target_params or accepts_kwargs:
+                    final_kwargs[name] = value
+                else:
+                    # Argument is implicitly dropped because the UFS method doesn't support it.
+                    pass
+
+        # 4. Execute the UFS method
+        # Using **final_kwargs maps arguments by name, avoiding positional mismatches.
+        final_kwargs = parameters_adapter(fs, fs_method, final_kwargs)
+        res = fs_method(**final_kwargs)
+        return res, fs
+
     def _log_alluxio_error(self, method_name, error):
         """
         Helper method to handle error logging, keeping the main logic clean.
         """
         log_msg = f"Exit(Error): alluxio op({method_name}), fallback to ufs"
         self.fallback_logger.warning(log_msg)
-        if self.ufs_updater.must_get_ufs_count() > 0:
+        if self.ufs_manager.must_get_ufs_count() > 0:
             self.fallback_logger.debug(f"{error} {traceback.format_exc()}")
         else:
             self.fallback_logger.info(f"{error} {traceback.format_exc()}")
@@ -437,6 +450,7 @@ class AlluxioFileSystem(AbstractFileSystem):
         except FileNotFoundError:
             return False
 
+    @fallback_handler
     def open(
         self,
         path,
@@ -466,7 +480,7 @@ class AlluxioFileSystem(AbstractFileSystem):
     ):
         """Open a file for reading or writing."""
         ufs = (
-            self.ufs_updater.must_get_ufs_from_path(path)
+            self.ufs_manager.must_get_ufs_from_path(path)
             if path and self.fallback_to_ufs_enabled
             else None
         )
@@ -641,7 +655,7 @@ class AlluxioFile(AbstractBufferedFile):
         super().__init__(alluxio, path, mode, **kwargs)
         if alluxio:
             self.alluxio_path = (
-                alluxio.ufs_updater.must_get_alluxio_path_from_ufs_full_path(
+                alluxio.ufs_manager.must_get_alluxio_path_from_ufs_full_path(
                     path
                 )
             )

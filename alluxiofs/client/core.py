@@ -198,7 +198,7 @@ class AlluxioClient:
                 self.config.local_cache_prefetch_concurrency
             )
             local_cache = LocalCacheManager(self.config)
-            self.data_manager = CachedFileReader(
+            self.local_cache_manager = CachedFileReader(
                 self,
                 local_cache,
                 thread_pool=self.local_cache_async_prefetch_thread_pool,
@@ -218,8 +218,8 @@ class AlluxioClient:
         """
         if self.executor:
             self.executor.shutdown(wait=True)
-        if self.data_manager:
-            self.data_manager.close()
+        if self.local_cache_manager:
+            self.local_cache_manager.close()
 
     def _check_response(self, response):
         if 200 <= response.status_code < 300:

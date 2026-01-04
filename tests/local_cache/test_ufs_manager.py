@@ -20,7 +20,15 @@ class TestUfsInfo:
 class TestUFSUpdater:
     @pytest.fixture
     def mock_alluxio(self):
-        alluxio = MagicMock()
+        from alluxiofs.client import AlluxioClient
+
+        class MockAlluxioFileSystem(AlluxioClient):
+            config = None
+
+            def get_ufs_info_from_worker(self):
+                pass
+
+        alluxio = MagicMock(spec=MockAlluxioFileSystem)
         alluxio.config.ufs_info_refresh_interval_minutes = 10
         alluxio.config.log_dir = "/tmp"
         alluxio.config.log_level = "INFO"
@@ -87,7 +95,7 @@ class TestUFSUpdater:
         mock_alluxio,
     ):
         updater = UFSUpdater(mock_alluxio)
-        ufs_info = UfsInfo("/mnt/s3", "s3://bucket", {"key": "val"})
+        ufs_info = UfsInfo("/mnt/s3", "s3://bucket", {"access_key": "val"})
 
         mock_get_protocol.return_value = "s3"
         mock_get_fs_class.return_value = True  # Simulate supported protocol
@@ -216,3 +224,76 @@ class TestUFSUpdater:
         assert (
             updater.must_get_alluxio_path_from_ufs_full_path("path") == "/path"
         )
+
+
+class TestLocalUFSUpdater:
+    @patch("alluxiofs.client.ufs_manager.setup_logger")
+    @patch(
+        "alluxiofs.client.ufs_manager.LocalUFSUpdater.register_ufs_fallback"
+    )
+    def test_parse_ufs_info(self, mock_register, mock_logger):
+        from alluxiofs.client.ufs_manager import LocalUFSUpdater
+
+        ufs_config = {
+            "s3://bucket1": {
+                "access_key": "my_key",
+                "secret_key": "my_secret",
+                "endpoint": "http://s3.amazonaws.com",
+                "ufs_mount_path": "/mnt/s3",
+            },
+            "hdfs://namenode": {
+                "user": "hadoop",
+                "ufs_mount_path": "/mnt/hdfs/",
+            },
+        }
+
+        LocalUFSUpdater(ufs_config)
+
+        # Verify parse_ufs_info result (it's called in __init__)
+        # Since we mocked register_ufs_fallback, we can check what it was called with
+        assert mock_register.call_count == 1
+        args, _ = mock_register.call_args
+        ufs_info_list = args[0]
+
+        assert len(ufs_info_list) == 2
+
+        # Check s3 info
+        s3_info = next(
+            info
+            for info in ufs_info_list
+            if info.ufs_full_path == "s3://bucket1"
+        )
+        assert s3_info.alluxio_path == "s3://bucket1"
+        assert s3_info.options == {
+            "access_key": "my_key",
+            "secret_key": "my_secret",
+            "endpoint": "http://s3.amazonaws.com",
+            "ufs_mount_path": "/mnt/s3",
+        }
+
+        # Check hdfs info
+        hdfs_info = next(
+            info
+            for info in ufs_info_list
+            if info.ufs_full_path == "hdfs://namenode"
+        )
+        assert hdfs_info.alluxio_path == "hdfs://namenode"
+        assert hdfs_info.options == {
+            "user": "hadoop",
+            "ufs_mount_path": "/mnt/hdfs/",
+        }
+
+    @patch("alluxiofs.client.ufs_manager.setup_logger")
+    @patch(
+        "alluxiofs.client.ufs_manager.LocalUFSUpdater.register_ufs_fallback"
+    )
+    def test_parse_ufs_info_invalid_config(self, mock_register, mock_logger):
+        from alluxiofs.client.ufs_manager import LocalUFSUpdater
+
+        ufs_config = {"s3://bucket1": "not a dict"}
+
+        LocalUFSUpdater(ufs_config)
+
+        args, _ = mock_register.call_args
+        ufs_info_list = args[0]
+        assert len(ufs_info_list) == 0

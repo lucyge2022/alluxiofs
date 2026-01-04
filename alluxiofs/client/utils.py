@@ -79,9 +79,13 @@ def parameters_adapter(fs, fs_method, final_kwargs):
 
 def get_protocol_from_path(path):
     """Extracts protocol (e.g., 's3') from 's3://bucket/key'."""
-    if path and "://" in path:
+    if not path:
+        return None
+    if "://" in path:
         return path.split("://")[0]
-    return None
+    if "/" in path or "\\" in path:
+        return None
+    return path
 
 
 def register_unregistered_ufs_to_fsspec(protocol):

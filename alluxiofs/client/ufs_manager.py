@@ -8,6 +8,7 @@ from typing import Optional
 import fsspec
 from fsspec import filesystem
 
+from alluxiofs import AlluxioClient
 from alluxiofs.client.const import ALLUXIO_UFS_INFO_REFRESH_INTERVAL_MINUTES
 from alluxiofs.client.log import setup_logger
 from alluxiofs.client.log import TagAdapter
@@ -29,12 +30,89 @@ class UfsInfo:
         self.options = options
 
 
-class UFSUpdater:
+class BaseUFSUpdater:
+    """
+    Base class for UFS Updater.
+    """
+
+    def __init__(self):
+        self._cached_ufs: Optional[Dict[str, Any]] = {}
+        self._path_map: Optional[Dict[str, str]] = {}
+        self.logger = None
+
+    def get_protocol_from_path(self, path):
+        return get_protocol_from_path(path)
+
+    def register_ufs_fallback(self, ufs_info_list: list[UfsInfo]):
+        """
+        Register under file systems (UFS) for fallback when accessed files fail in Alluxiofs.
+
+        Args:
+            ufs_info_list: List of UfsInfo objects containing UFS details
+        """
+        for ufs_info in ufs_info_list:
+            protocol = self.get_protocol_from_path(
+                ufs_info.ufs_full_path.lower()
+            )
+            register_unregistered_ufs_to_fsspec(protocol)
+            if fsspec.get_filesystem_class(protocol) is None:
+                raise ValueError(f"Unsupported protocol: {protocol}")
+            else:
+                target_options = ufs_info.options
+                target_options = convert_ufs_info_to(protocol, target_options)
+                self._cached_ufs[ufs_info.ufs_full_path] = filesystem(
+                    protocol, **target_options
+                )
+                self._path_map[ufs_info.ufs_full_path] = ufs_info.alluxio_path
+                self.logger.debug(
+                    f"Registered UFS client for {ufs_info.ufs_full_path}"
+                )
+
+    def get_ufs_count(self):
+        return len(self._cached_ufs) if self._cached_ufs else 0
+
+    def get_ufs_from_cache(self, path: str):
+        if not self._cached_ufs:
+            return None
+        for ufs_path in self._cached_ufs:
+            if path.startswith(ufs_path):
+                return self._cached_ufs[ufs_path]
+        return None
+
+    def get_alluxio_path_from_ufs_full_path(self, path: str):
+        if not self._cached_ufs:
+            return None
+        for ufs_path in self._cached_ufs:
+            if path.startswith(ufs_path):
+                return path.replace(ufs_path, self._path_map[ufs_path], 1)
+        return None
+
+    def must_get_ufs_count(self):
+        return self.get_ufs_count()
+
+    def must_get_ufs_from_path(self, path: str):
+        return self.get_ufs_from_cache(path)
+
+    def must_get_alluxio_path_from_ufs_full_path(self, path: str):
+        return self.get_alluxio_path_from_ufs_full_path(path)
+
+    def start_updater(self):
+        pass
+
+    def stop_updater(self):
+        pass
+
+
+class UFSUpdater(BaseUFSUpdater):
     """
     Class responsible for periodically updating Ufs Info in the background.
     """
 
     def __init__(self, alluxio):
+        super().__init__()
+        assert (
+            isinstance(alluxio, AlluxioClient) or alluxio is None
+        ), "alluxio must be an instance of AlluxioClient or None"
         self.alluxio = alluxio
         self.config = alluxio.config if alluxio else None
         if self.alluxio:
@@ -59,10 +137,6 @@ class UFSUpdater:
                 else None,
             )
             self.logger = TagAdapter(base_logger, {"tag": "[UFS_MANAGER]"})
-
-        # Stores the latest fetched result
-        self._cached_ufs: Optional[Dict[str, Any]] = {}
-        self._path_map: Optional[Dict[str, str]] = {}
 
         # Lock to protect the shared variables _cached_ufs and _path_map
         self._lock = threading.RLock()
@@ -211,12 +285,7 @@ class UFSUpdater:
 
     def get_ufs_count(self):
         with self._lock:
-            if self._cached_ufs is None:
-                return 0
-            return len(self._cached_ufs)
-
-    def get_protocol_from_path(self, path):
-        return get_protocol_from_path(path)
+            return super().get_ufs_count()
 
     def must_get_ufs_from_path(self, path: str):
         self._init_event.wait()
@@ -232,9 +301,7 @@ class UFSUpdater:
 
     def get_ufs_from_cache(self, path: str):
         with self._lock:
-            for ufs_path in self._cached_ufs:
-                if path.startswith(ufs_path):
-                    return self._cached_ufs[ufs_path]
+            return super().get_ufs_from_cache(path)
 
     def must_get_alluxio_path_from_ufs_full_path(self, path: str):
         self._init_event.wait()
@@ -242,31 +309,104 @@ class UFSUpdater:
 
     def get_alluxio_path_from_ufs_full_path(self, path: str):
         with self._lock:
-            for ufs_path in self._cached_ufs:
-                if path.startswith(ufs_path):
-                    return path.replace(ufs_path, self._path_map[ufs_path], 1)
+            return super().get_alluxio_path_from_ufs_full_path(path)
 
-    def register_ufs_fallback(self, ufs_info_list: UfsInfo):
-        """
-        Register under file systems (UFS) for fallback when accessed files fail in Alluxiofs.
 
-        Args:
-            ufs_info_list: List of UfsInfo objects containing UFS details
+class LocalUFSUpdater(BaseUFSUpdater):
+    def __init__(self, ufs_config: Dict[str, Any]):
+        super().__init__()
+        self.ufs_config = ufs_config
+        base_logger = setup_logger(
+            class_name=self.__class__.__name__,
+        )
+        self.logger = TagAdapter(base_logger, {"tag": "[UFS_MANAGER]"})
+        self.register_ufs_fallback(self.parse_ufs_info())
+
+    def parse_ufs_info(self) -> list:
         """
-        for ufs_info in ufs_info_list:
-            protocol = self.get_protocol_from_path(
-                ufs_info.ufs_full_path.lower()
+        Parse UFS info from the provided configuration.
+
+        Returns:
+            List of UfsInfo objects, empty list if parsing fails or no data
+        """
+        ufs_info_list = []
+
+        for ufs_full_path, value in self.ufs_config.items():
+            if not isinstance(value, dict):
+                self.logger.warning(
+                    f"UFS config for {ufs_full_path} is not a dictionary, skipping"
+                )
+                continue
+
+            options = value.copy()
+
+            if ufs_full_path.endswith("/"):
+                ufs_full_path = ufs_full_path[:-1]
+
+            ufs_info = UfsInfo(
+                alluxio_path=ufs_full_path,
+                ufs_full_path=ufs_full_path,
+                options=options,
             )
-            register_unregistered_ufs_to_fsspec(protocol)
-            if fsspec.get_filesystem_class(protocol) is None:
-                raise ValueError(f"Unsupported protocol: {protocol}")
-            else:
-                target_options = ufs_info.options
-                target_options = convert_ufs_info_to(protocol, target_options)
-                self._cached_ufs[ufs_info.ufs_full_path] = filesystem(
-                    protocol, **target_options
-                )
-                self._path_map[ufs_info.ufs_full_path] = ufs_info.alluxio_path
-                self.logger.debug(
-                    f"Registered UFS client for {ufs_info.ufs_full_path}"
-                )
+            ufs_info_list.append(ufs_info)
+
+        return ufs_info_list
+
+
+class UFSManager:
+    """
+    Class responsible for managing Ufs Info.
+    """
+
+    def __init__(self, alluxio=None, config: Dict = None):
+        self.ufs_updater: Optional[BaseUFSUpdater] = None
+        if alluxio is not None:
+            self.ufs_updater = UFSUpdater(alluxio)
+        elif config is not None:
+            self.ufs_updater = LocalUFSUpdater(config)
+
+    def initialize_ufs_manager(self):
+        """
+        Initialize UFS Manager with UFS Updater.
+        """
+        if self.ufs_updater:
+            self.ufs_updater.start_updater()
+
+    def shutdown_ufs_manager(self):
+        """
+        Shutdown UFS Manager and stop the UFS Updater.
+        """
+        if self.ufs_updater:
+            self.ufs_updater.stop_updater()
+
+    def must_get_ufs_count(self):
+        if self.ufs_updater:
+            return self.ufs_updater.must_get_ufs_count()
+        return 0
+
+    def must_get_ufs_from_path(self, path: str):
+        if self.ufs_updater:
+            return self.ufs_updater.must_get_ufs_from_path(path)
+        return None
+
+    def must_get_alluxio_path_from_ufs_full_path(self, path: str):
+        if self.ufs_updater:
+            return self.ufs_updater.must_get_alluxio_path_from_ufs_full_path(
+                path
+            )
+        return None
+
+    def get_ufs_count(self):
+        if self.ufs_updater:
+            return self.ufs_updater.get_ufs_count()
+        return 0
+
+    def get_ufs_from_cache(self, path: str):
+        if self.ufs_updater:
+            return self.ufs_updater.get_ufs_from_cache(path)
+        return None
+
+    def get_alluxio_path_from_ufs_full_path(self, path: str):
+        if self.ufs_updater:
+            return self.ufs_updater.get_alluxio_path_from_ufs_full_path(path)
+        return None
