@@ -140,7 +140,7 @@ class AlluxioFileSystem(AbstractFileSystem):
         test_options = kwargs.get("test_options", {})
         test_skip_alluxio = test_options.get("skip_alluxio") is True
         self.skip_alluxio = kwargs.get("skip_alluxio")
-        client = AlluxioClient(**kwargs)
+        self.config = AlluxioClientConfig(**kwargs)
         if self.skip_alluxio is True:
             ufs_config = kwargs.get("ufs_config", {})
             if not ufs_config:
@@ -151,6 +151,7 @@ class AlluxioFileSystem(AbstractFileSystem):
             self.ufs_manager.initialize_ufs_manager()
             self.alluxio = None
         else:
+            client = AlluxioClient(self.config)
             self.ufs_manager = UFSManager(alluxio=client)
             self.ufs_manager.initialize_ufs_manager()
             self.alluxio = None if test_skip_alluxio else client
@@ -160,7 +161,6 @@ class AlluxioFileSystem(AbstractFileSystem):
             if self.alluxio
             else kwargs.get("fallback_to_ufs_enabled", True)
         )
-        self.config = client.config
         self.file_info_cache = LRUCache(maxsize=1000)
         self.error_metrics = AlluxioErrorMetrics()
 
@@ -204,7 +204,7 @@ class AlluxioFileSystem(AbstractFileSystem):
             raise RuntimeError("Alluxio client is not initialized.")
         if self.alluxio.config.local_cache_enabled is False:
             raise RuntimeError("Alluxio local cache is not enabled.")
-        return self.alluxio.data_manager.cache.is_file_in_local_cache(
+        return self.alluxio.local_cache_manager.cache.is_file_in_local_cache(
             file_path
         )
 

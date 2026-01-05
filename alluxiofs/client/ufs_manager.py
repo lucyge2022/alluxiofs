@@ -8,8 +8,8 @@ from typing import Optional
 import fsspec
 from fsspec import filesystem
 
-from alluxiofs import AlluxioClient
 from alluxiofs.client.const import ALLUXIO_UFS_INFO_REFRESH_INTERVAL_MINUTES
+from alluxiofs.client.core import AlluxioClient
 from alluxiofs.client.log import setup_logger
 from alluxiofs.client.log import TagAdapter
 from alluxiofs.client.utils import convert_ufs_info_to
@@ -43,7 +43,7 @@ class BaseUFSUpdater:
     def get_protocol_from_path(self, path):
         return get_protocol_from_path(path)
 
-    def register_ufs_fallback(self, ufs_info_list: list[UfsInfo]):
+    def register_ufs_fallback(self, ufs_info_list: list):
         """
         Register under file systems (UFS) for fallback when accessed files fail in Alluxiofs.
 
@@ -54,6 +54,12 @@ class BaseUFSUpdater:
             protocol = self.get_protocol_from_path(
                 ufs_info.ufs_full_path.lower()
             )
+            if not protocol:
+                if self.logger:
+                    self.logger.warning(
+                        f"Invalid protocol or path: {ufs_info.ufs_full_path}"
+                    )
+                continue
             register_unregistered_ufs_to_fsspec(protocol)
             if fsspec.get_filesystem_class(protocol) is None:
                 raise ValueError(f"Unsupported protocol: {protocol}")
@@ -110,9 +116,12 @@ class UFSUpdater(BaseUFSUpdater):
 
     def __init__(self, alluxio):
         super().__init__()
-        assert (
-            isinstance(alluxio, AlluxioClient) or alluxio is None
-        ), "alluxio must be an instance of AlluxioClient or None"
+        assert isinstance(alluxio, AlluxioClient) or alluxio is None, (
+            "alluxio must be an instance of AlluxioClient or None so that "
+            "UFSUpdater can access the Alluxio configuration and correctly "
+            "initialize background UFS info refresh; passing any other type "
+            "will prevent proper setup of periodic updates and logging."
+        )
         self.alluxio = alluxio
         self.config = alluxio.config if alluxio else None
         if self.alluxio:

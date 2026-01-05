@@ -49,6 +49,7 @@ class TestUtils:
         assert get_protocol_from_path("hdfs://namenode/path") == "hdfs"
         assert get_protocol_from_path("/local/path") is None
         assert get_protocol_from_path(None) is None
+        assert get_protocol_from_path("file.txt") is None
 
     @patch("alluxiofs.client.utils.fsspec")
     def test_register_unregistered_ufs_to_fsspec(self, mock_fsspec):

@@ -297,3 +297,108 @@ class TestLocalUFSUpdater:
         args, _ = mock_register.call_args
         ufs_info_list = args[0]
         assert len(ufs_info_list) == 0
+
+
+class TestUFSManager:
+    @patch("alluxiofs.client.ufs_manager.UFSUpdater")
+    def test_init_with_alluxio(self, mock_ufs_updater):
+        from alluxiofs.client.ufs_manager import UFSManager
+
+        mock_alluxio = MagicMock()
+        manager = UFSManager(alluxio=mock_alluxio)
+
+        mock_ufs_updater.assert_called_once_with(mock_alluxio)
+        assert manager.ufs_updater == mock_ufs_updater.return_value
+
+    @patch("alluxiofs.client.ufs_manager.LocalUFSUpdater")
+    def test_init_with_config(self, mock_local_ufs_updater):
+        from alluxiofs.client.ufs_manager import UFSManager
+
+        config = {"s3://bucket": {"key": "val"}}
+        manager = UFSManager(config=config)
+
+        mock_local_ufs_updater.assert_called_once_with(config)
+        assert manager.ufs_updater == mock_local_ufs_updater.return_value
+
+    def test_init_with_none(self):
+        from alluxiofs.client.ufs_manager import UFSManager
+
+        manager = UFSManager()
+        assert manager.ufs_updater is None
+
+    def test_lifecycle_methods(self):
+        from alluxiofs.client.ufs_manager import UFSManager
+
+        mock_updater = MagicMock()
+        manager = UFSManager()
+        manager.ufs_updater = mock_updater
+
+        manager.initialize_ufs_manager()
+        mock_updater.start_updater.assert_called_once()
+
+        manager.shutdown_ufs_manager()
+        mock_updater.stop_updater.assert_called_once()
+
+    def test_delegation_methods(self):
+        from alluxiofs.client.ufs_manager import UFSManager
+
+        mock_updater = MagicMock()
+        manager = UFSManager()
+        manager.ufs_updater = mock_updater
+
+        # Test must_get_ufs_count
+        mock_updater.must_get_ufs_count.return_value = 5
+        assert manager.must_get_ufs_count() == 5
+        mock_updater.must_get_ufs_count.assert_called_once()
+
+        # Test must_get_ufs_from_path
+        mock_updater.must_get_ufs_from_path.return_value = "ufs_instance"
+        assert manager.must_get_ufs_from_path("path") == "ufs_instance"
+        mock_updater.must_get_ufs_from_path.assert_called_once_with("path")
+
+        # Test must_get_alluxio_path_from_ufs_full_path
+        mock_updater.must_get_alluxio_path_from_ufs_full_path.return_value = (
+            "/alluxio/path"
+        )
+        assert (
+            manager.must_get_alluxio_path_from_ufs_full_path("path")
+            == "/alluxio/path"
+        )
+        mock_updater.must_get_alluxio_path_from_ufs_full_path.assert_called_once_with(
+            "path"
+        )
+
+        # Test get_ufs_count
+        mock_updater.get_ufs_count.return_value = 3
+        assert manager.get_ufs_count() == 3
+        mock_updater.get_ufs_count.assert_called_once()
+
+        # Test get_ufs_from_cache
+        mock_updater.get_ufs_from_cache.return_value = "cached_ufs"
+        assert manager.get_ufs_from_cache("path") == "cached_ufs"
+        mock_updater.get_ufs_from_cache.assert_called_once_with("path")
+
+        # Test get_alluxio_path_from_ufs_full_path
+        mock_updater.get_alluxio_path_from_ufs_full_path.return_value = (
+            "/cached/path"
+        )
+        assert (
+            manager.get_alluxio_path_from_ufs_full_path("path")
+            == "/cached/path"
+        )
+        mock_updater.get_alluxio_path_from_ufs_full_path.assert_called_once_with(
+            "path"
+        )
+
+    def test_delegation_methods_no_updater(self):
+        from alluxiofs.client.ufs_manager import UFSManager
+
+        manager = UFSManager()
+        assert manager.ufs_updater is None
+
+        assert manager.must_get_ufs_count() == 0
+        assert manager.must_get_ufs_from_path("path") is None
+        assert manager.must_get_alluxio_path_from_ufs_full_path("path") is None
+        assert manager.get_ufs_count() == 0
+        assert manager.get_ufs_from_cache("path") is None
+        assert manager.get_alluxio_path_from_ufs_full_path("path") is None
