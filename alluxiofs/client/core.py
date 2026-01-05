@@ -141,7 +141,7 @@ class AlluxioClient:
 
     def __init__(
         self,
-        **kwargs,
+        config: AlluxioClientConfig = None,
     ):
         """
         Inits Alluxio file system.
@@ -158,7 +158,7 @@ class AlluxioClient:
             worker_http_port (int, optional):
                 The port of the HTTP server on each Alluxio worker node.
         """
-        self.config = AlluxioClientConfig(**kwargs)
+        self.config = config or AlluxioClientConfig()
         base_logger = setup_logger(
             self.config.log_dir,
             self.config.log_level,
@@ -198,7 +198,7 @@ class AlluxioClient:
                 self.config.local_cache_prefetch_concurrency
             )
             local_cache = LocalCacheManager(self.config)
-            self.data_manager = CachedFileReader(
+            self.local_cache_manager = CachedFileReader(
                 self,
                 local_cache,
                 thread_pool=self.local_cache_async_prefetch_thread_pool,
@@ -218,8 +218,8 @@ class AlluxioClient:
         """
         if self.executor:
             self.executor.shutdown(wait=True)
-        if self.data_manager:
-            self.data_manager.close()
+        if self.local_cache_manager:
+            self.local_cache_manager.close()
 
     def _check_response(self, response):
         if 200 <= response.status_code < 300:
@@ -543,7 +543,7 @@ class AlluxioClient:
         prefetch_policy=None,
     ):
         if self.local_cache_enabled:
-            return self.data_manager.read_file_range(
+            return self.local_cache_manager.read_file_range(
                 file_path,
                 alluxio_path,
                 offset,

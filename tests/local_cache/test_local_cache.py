@@ -248,7 +248,7 @@ class TestCachedFileReader(unittest.TestCase):
 
         self.reader = CachedFileReader(
             alluxio=self.alluxio_client,
-            data_manager=self.manager,
+            local_cache=self.manager,
             thread_pool=ThreadPoolExecutor(max_workers=2),
             config=self.config,
         )

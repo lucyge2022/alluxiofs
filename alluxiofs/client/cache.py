@@ -563,7 +563,7 @@ class CachedFileReader:
     def __init__(
         self,
         alluxio=None,
-        data_manager=None,
+        local_cache=None,
         thread_pool=ThreadPoolExecutor(4),
         config=None,
     ):
@@ -577,8 +577,8 @@ class CachedFileReader:
 
         self.logger = TagAdapter(self.logger, {"tag": "[LOCAL_CACHE]"})
 
-        self.cache = data_manager
-        self.block_size = data_manager.block_size
+        self.cache = local_cache
+        self.block_size = local_cache.block_size
         self.alluxio_client = alluxio
         self.pool = thread_pool
         self.prefetch_policy = get_prefetch_policy(

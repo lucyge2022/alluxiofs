@@ -28,21 +28,28 @@ class TestUtils:
         res_oss = convert_ufs_info_to("oss", info_oss)
         assert res_oss == {"key": "ak", "secret": "sk", "endpoint": "ep"}
 
-        # Test other ufs
-        info_other = {
+        # Test s3 ufs
+        info_s3 = {
             "access_key": "ak",
             "secret_key": "sk",
             "endpoint": "ep",
             "other": "val",
         }
-        res_other = convert_ufs_info_to("s3", info_other)
+        res_s3 = convert_ufs_info_to("s3", info_s3)
+        assert res_s3 == {"key": "ak", "secret": "sk", "endpoint_url": "ep"}
+
+        # Test other ufs (not s3 or oss)
+        info_other = {"key": "val"}
+        res_other = convert_ufs_info_to("hdfs", info_other)
         assert res_other == info_other
 
     def test_get_protocol_from_path(self):
         assert get_protocol_from_path("s3://bucket/key") == "s3"
+        assert get_protocol_from_path("s3") == "s3"
         assert get_protocol_from_path("hdfs://namenode/path") == "hdfs"
         assert get_protocol_from_path("/local/path") is None
         assert get_protocol_from_path(None) is None
+        assert get_protocol_from_path("file.txt") is None
 
     @patch("alluxiofs.client.utils.fsspec")
     def test_register_unregistered_ufs_to_fsspec(self, mock_fsspec):
