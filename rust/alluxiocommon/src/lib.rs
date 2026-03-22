@@ -157,6 +157,85 @@ impl DataManager {
         Ok(PyBytes::new(self_.py(), &concatenated_data).to_object(self_.py()))
     }
 
+    /// Parallel write: POST each (url, body) pair concurrently using the Rayon
+    /// thread pool + Reqwest blocking client. Returns True on success.
+    ///
+    /// url_data_pairs: list of (url: str, body: bytes) tuples.
+    fn make_multi_write_page_http_req(
+        self_: PyRef<'_, Self>,
+        url_data_pairs: Vec<(String, Vec<u8>)>,
+    ) -> PyResult<PyObject> {
+        let num_reqs = url_data_pairs.len();
+        if num_reqs == 0 {
+            return Ok(PyBool::new(self_.py(), true).to_object(self_.py()));
+        }
+
+        let mut senders = Vec::with_capacity(num_reqs);
+        for _ in 0..num_reqs {
+            senders.push(None);
+        }
+
+        let thread_pool = match self_.ondemand_pool {
+            true => {
+                match create_pool(
+                    cmp::min(self_.max_threads, num_reqs),
+                    String::from(DEFAULT_THREADPOOL_NAME),
+                ) {
+                    Ok(pool) => Arc::new(pool),
+                    Err(err) => {
+                        PyException::new_err(err.to_string()).restore(self_.py());
+                        return Err(PyErr::fetch(self_.py()));
+                    }
+                }
+            }
+            false => Arc::clone(self_.thread_pool.as_ref().unwrap()),
+        };
+
+        let request_client = match self_.ondemand_pool {
+            true => Arc::new(Client::new()),
+            false => Arc::clone(self_.request_client.as_ref().unwrap()),
+        };
+
+        for i in 0..num_reqs {
+            let (url, data) = url_data_pairs[i].clone();
+            let client_clone = Arc::clone(&request_client);
+            let (send, recv) = tokio::sync::oneshot::channel();
+            let install_res = thread_pool.install(move || -> Result<(), reqwest::Error> {
+                let body = perform_http_post(url.as_str(), &data, client_clone.as_ref());
+                send.send(body).unwrap();
+                Ok(())
+            });
+            match install_res {
+                Ok(_) => {}
+                Err(err) => {
+                    PyException::new_err(err.to_string()).restore(self_.py());
+                    return Err(PyErr::fetch(self_.py()));
+                }
+            }
+            senders[i] = Some(recv);
+        }
+
+        for sender in senders {
+            let result = sender.unwrap().blocking_recv();
+            match result {
+                Ok(write_result) => match write_result {
+                    Ok(_) => {}
+                    Err(err) => {
+                        PyException::new_err(format!("Write request failed: {}", err))
+                            .restore(self_.py());
+                        return Err(PyErr::fetch(self_.py()));
+                    }
+                },
+                Err(err) => {
+                    PyException::new_err(err.to_string()).restore(self_.py());
+                    return Err(PyErr::fetch(self_.py()));
+                }
+            }
+        }
+
+        Ok(PyBool::new(self_.py(), true).to_object(self_.py()))
+    }
+
     fn make_multi_read_file_http_req(self_: PyRef<'_, Self>, urls: Vec<String>) -> PyResult<PyObject> {
         let num_reqs = urls.len();
         let mut senders = Vec::with_capacity(num_reqs);
